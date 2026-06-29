@@ -1,0 +1,19 @@
+# 中转监控系统配置文件
+# 将此文件复制为 config.yaml 并填入实际配置
+
+upstreams:
+  # 示例中转配置
+  - name: 我的中转站                    # 显示名称（必填）
+    base_url: https://api.example.com  # 中转站 API 地址（必填）
+    type: sub2api                      # adapter 类型（必填：sub2api / new-api）
+    email: user@example.com            # 登录账号（必填）
+    password: your-password-here       # 登录密码（必填）
+    poll_interval: 60                  # 轮询间隔（秒），默认 60
+    enabled: true                      # 是否启用，默认 true
+
+  # 可以配置多个中转
+  # - name: 另一个中转站
+  #   base_url: https://api2.example.com
+  #   type: sub2api
+  #   email: user2@example.com
+  #   password: another-password

@@ -1,0 +1,15 @@
+node_modules/
+client/build/
+data/
+config.yaml
+*.db
+.env
+.DS_Store
+
+# AI tooling
+.claude/
+.codex/
+.codegraph/
+openspec/
+CLAUDE.md
+AGENTS.md

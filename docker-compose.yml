@@ -1,0 +1,22 @@
+services:
+  llm-watch:
+    build: .
+    image: llm-watch:latest
+    container_name: llm-watch
+    restart: unless-stopped
+    ports:
+      - "8888:8888"
+    environment:
+      - TZ=Asia/Shanghai
+      - PORT=8888
+    volumes:
+      # Persist the SQLite database (快照、变动记录) across rebuilds
+      - ./data:/app/data
+      # Mount the config file (中转配置)
+      - ./config.yaml:/app/config.yaml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3456/api/stats"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
