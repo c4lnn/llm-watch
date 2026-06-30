@@ -95,6 +95,7 @@ test('startup normalizes legacy numeric poll identifier columns', async () => {
     assert.equal(columnType('group_snapshots', 'group_id'), 'TEXT');
     assert.equal(columnType('group_changes', 'upstream_id'), 'TEXT');
     assert.equal(columnType('group_changes', 'group_id'), 'TEXT');
+    assert.equal(columnType('upstream_balance_snapshots', 'upstream_id'), 'TEXT');
   }, createLegacyDb);
 });
 
@@ -137,6 +138,45 @@ test('poll persistence accepts generated upstream IDs and named group keys after
     assert.deepEqual(snapshotRows[0], { upstream_id: upstream.id, group_id: 'named-group' });
     assert.deepEqual(changeRows[0], { upstream_id: upstream.id, group_id: 'named-group' });
   }, createLegacyDb);
+});
+
+test('balance snapshot helpers insert and select latest status per upstream', async () => {
+  await withTempDb('balance-snapshots', async () => {
+    const upstreamId = 'balance-upstream';
+    db.run(
+      `INSERT INTO upstreams (id, name, base_url, type, enabled)
+       VALUES (?, ?, ?, ?, 1)`,
+      [upstreamId, 'Balance Upstream', 'https://balance.example.test', 'sub2api']
+    );
+    db.insertUpstreamBalanceSnapshot({
+      upstreamId,
+      status: 'failed',
+      label: 'balance',
+      error: 'boom',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    });
+    db.insertUpstreamBalanceSnapshot({
+      upstreamId,
+      status: 'success',
+      balance: 12.5,
+      displayValue: 12.5,
+      displayUnit: '',
+      label: 'balance',
+      kind: 'balance',
+      rawData: { balance: 12.5, token: 'secret' },
+      createdAt: '2026-01-01T00:01:00.000Z',
+    });
+
+    const latest = db.selectLatestUpstreamBalanceStatuses([upstreamId]);
+
+    assert.equal(latest.length, 1);
+    assert.equal(latest[0].status, 'success');
+    assert.equal(latest[0].balance, 12.5);
+    assert.equal(latest[0].display_value, 12.5);
+    assert.equal(latest[0].kind, 'balance');
+    assert.equal(latest[0].raw_data, undefined);
+    assert.deepEqual(db.selectLatestUpstreamBalanceStatuses([]), []);
+  });
 });
 
 test('available change notification line includes the group rate', async () => {

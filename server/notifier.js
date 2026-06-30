@@ -1,5 +1,6 @@
 const axios = require('axios');
 const { selectAll } = require('./db');
+const { getNotifications } = require('./config');
 
 // Bark push notification
 async function sendBark(config, title, body) {
@@ -12,28 +13,43 @@ const HANDLERS = {
   bark: sendBark,
 };
 
+function parseChannelConfig(config) {
+  if (typeof config === 'string') return JSON.parse(config);
+  if (config && typeof config === 'object') return config;
+  return {};
+}
+
 async function notify(configs, title, body) {
   const results = [];
   for (const cfg of configs) {
     if (!cfg.enabled) continue;
     const handler = HANDLERS[cfg.type];
     if (!handler) {
-      results.push({ type: cfg.type, success: false, error: 'Unknown type' });
+      results.push({ id: cfg.id, type: cfg.type, success: false, error: 'Unknown type' });
       continue;
     }
     try {
-      await handler(JSON.parse(cfg.config), title, body);
-      results.push({ type: cfg.type, success: true });
+      await handler(parseChannelConfig(cfg.config), title, body);
+      results.push({ id: cfg.id, type: cfg.type, success: true });
     } catch (err) {
-      results.push({ type: cfg.type, success: false, error: err.message });
+      results.push({ id: cfg.id, type: cfg.type, success: false, error: err.message });
     }
   }
   return results;
 }
 
+function applyEnabledOverrides(configs) {
+  const rows = selectAll('SELECT notification_id, enabled FROM notification_state');
+  const overrideMap = Object.fromEntries(rows.map(row => [String(row.notification_id), row.enabled === 1]));
+  return configs.map(cfg => ({
+    ...cfg,
+    enabled: Object.prototype.hasOwnProperty.call(overrideMap, cfg.id) ? overrideMap[cfg.id] : cfg.enabled,
+  }));
+}
+
 // Dispatch a notification to every enabled channel.
 async function sendNotification(title, body) {
-  const configs = selectAll('SELECT * FROM notification_config WHERE enabled = 1');
+  const configs = applyEnabledOverrides(getNotifications()).filter(cfg => cfg.enabled);
   if (!configs.length) {
     console.log('[Notify] 无启用的通知渠道，跳过推送');
     return;
@@ -47,4 +63,11 @@ async function sendNotification(title, body) {
   return results;
 }
 
-module.exports = { notify, sendNotification };
+module.exports = {
+  notify,
+  sendNotification,
+  _test: {
+    applyEnabledOverrides,
+    parseChannelConfig,
+  },
+};

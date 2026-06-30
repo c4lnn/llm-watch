@@ -9,6 +9,20 @@ const FIELD_NAMES = {
   image_rate_multiplier: '图片倍率', rpm_limit: 'RPM限制',
 };
 
+function formatAccountStatus(status) {
+  const label = status?.label || '余额';
+  if (!status || status.status === 'not_fetched') return { text: `${label}: -`, className: 'text-gray-400' };
+  if (status.status === 'unsupported') return { text: `${label}: 不支持`, className: 'text-gray-400' };
+  if (status.status === 'failed') return { text: `${label}: 获取失败`, className: 'text-red-500' };
+
+  const value = Number(status.display_value ?? status.balance);
+  const formatted = Number.isFinite(value)
+    ? value.toLocaleString('zh-CN', { maximumFractionDigits: 4 })
+    : '-';
+  const unit = status.display_unit ? ` ${status.display_unit}` : '';
+  return { text: `${label}: ${formatted}${unit}`, className: 'text-gray-600' };
+}
+
 function Dashboard() {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -26,12 +40,20 @@ function Dashboard() {
   if (loading) return <div className="text-center py-10 text-gray-400">加载中...</div>;
 
   const changeMap = stats.recent_changes || {};
+  const balanceMap = stats.upstream_balances || {};
 
   // Group by upstream
   const grouped = {};
   for (const r of stats.latest_rates) {
-    if (!grouped[r.upstream_name]) {
-      grouped[r.upstream_name] = { upstreamId: r.upstream_id, type: r.type, time: r.created_at, groups: [] };
+    if (!grouped[r.upstream_id]) {
+      grouped[r.upstream_id] = {
+        upstreamId: r.upstream_id,
+        upstreamName: r.upstream_name,
+        type: r.type,
+        time: r.created_at,
+        balance: balanceMap[r.upstream_id],
+        groups: [],
+      };
     }
     let platform = '';
     let updatedAt = '';
@@ -43,7 +65,7 @@ function Dashboard() {
       desc = raw.description || raw.desc || '';
     } catch {}
     const changeKey = `${r.upstream_id}_${r.group_id}`;
-    grouped[r.upstream_name].groups.push({
+    grouped[r.upstream_id].groups.push({
       id: r.group_id,
       name: r.group_name,
       rate: r.rate,
@@ -52,8 +74,8 @@ function Dashboard() {
       desc,
       changes: changeMap[changeKey] || [],
     });
-    if (r.created_at > grouped[r.upstream_name].time) {
-      grouped[r.upstream_name].time = r.created_at;
+    if (r.created_at > grouped[r.upstream_id].time) {
+      grouped[r.upstream_id].time = r.created_at;
     }
   }
 
@@ -102,18 +124,23 @@ function Dashboard() {
             : '当前筛选条件下无中转'}
         </div>
       ) : (
-        filteredEntries.map(([name, data]) => {
+        filteredEntries.map(([upstreamId, data]) => {
           const isNewApi = data.type === 'new-api';
           return (
-            <div key={name} className="bg-white rounded-xl shadow-sm overflow-hidden">
-              <div className="px-6 py-4 border-b bg-gray-50 flex items-center justify-between">
+            <div key={upstreamId} className="bg-white rounded-xl shadow-sm overflow-hidden">
+              <div className="px-6 py-4 border-b bg-gray-50 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-center gap-2">
-                  <h3 className="font-semibold text-gray-800">{name}</h3>
+                  <h3 className="font-semibold text-gray-800">{data.upstreamName}</h3>
                   <span className="text-xs px-1.5 py-0.5 rounded bg-gray-200 text-gray-500">{data.type}</span>
                 </div>
-                <span className="text-xs text-gray-400">
-                  最近轮询: {new Date(data.time).toLocaleString('zh-CN')}
-                </span>
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+                  <span className={formatAccountStatus(data.balance).className}>
+                    {formatAccountStatus(data.balance).text}
+                  </span>
+                  <span className="text-gray-400">
+                    最近轮询: {new Date(data.time).toLocaleString('zh-CN')}
+                  </span>
+                </div>
               </div>
 
               <table className="w-full">

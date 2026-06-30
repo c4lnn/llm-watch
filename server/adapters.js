@@ -4,6 +4,8 @@
  * 接口：
  *   login(baseUrl, account, password) -> auth token string (缓存到 DB)
  *   fetchGroups(baseUrl, authToken)   -> [{ key, name, rate, raw }] 归一化分组
+ *   fetchAccountStatus(baseUrl, authToken) -> { balance, displayValue, displayUnit, label, kind, raw }
+ *                                      可选；归一化账号余额/剩余额度
  *   fieldLabels                       -> { rawField: 中文标签 } 变动显示用
  *   trackedFields                     -> 变动检测对比的字段列表
  *
@@ -15,6 +17,8 @@
  *   认证        Authorization: Bearer <token>   Cookie: session + New-Api-User: <id>
  *   分组        GET /api/v1/groups/available    GET /api/user/self/groups
  *               data:[{id,name,rate_multiplier,…}] data:{名称:{ratio,desc}}
+ *   账号状态    GET /api/v1/user/profile        GET /api/user/self
+ *               data.balance                    data.quota
  *   归一化 key   String(id)                      分组名
  *   凭证失效    401 → 自动重登                   401 → 自动重登
  *
@@ -25,6 +29,7 @@
 const axios = require('axios');
 
 const TIMEOUT = 15000;
+const NEWAPI_QUOTA_PER_DISPLAY_UNIT = 500000;
 
 // ---------------- sub2api ----------------
 
@@ -68,6 +73,26 @@ const sub2api = {
       rate: parseFloat(it.rate_multiplier ?? 1),
       raw: it,
     }));
+  },
+
+  async fetchAccountStatus(baseUrl, authToken) {
+    const resp = await axios.get(
+      `${baseUrl}/api/v1/user/profile`,
+      { headers: { Authorization: `Bearer ${authToken}` }, timeout: TIMEOUT }
+    );
+    const data = resp.data?.data || {};
+    const balance = Number(data.balance);
+    if (!Number.isFinite(balance)) {
+      throw new Error(resp.data?.message || '获取余额失败：未返回有效 balance');
+    }
+    return {
+      balance,
+      displayValue: balance,
+      displayUnit: '',
+      label: '余额',
+      kind: 'balance',
+      raw: { balance: data.balance },
+    };
   },
 };
 
@@ -118,6 +143,28 @@ const newapi = {
       // skip meta groups without a numeric ratio (e.g. "auto" → "自动")
       .filter(g => Number.isFinite(g.rate));
   },
+
+  async fetchAccountStatus(baseUrl, authToken) {
+    const { cookie, userId } = JSON.parse(authToken);
+    const resp = await axios.get(
+      `${baseUrl}/api/user/self`,
+      { headers: { Cookie: cookie, 'New-Api-User': String(userId) }, timeout: TIMEOUT }
+    );
+    if (!resp.data?.success) throw new Error(resp.data?.message || '获取额度失败');
+    const data = resp.data.data || {};
+    const quota = Number(data.quota);
+    if (!Number.isFinite(quota)) {
+      throw new Error(resp.data?.message || '获取额度失败：未返回有效 quota');
+    }
+    return {
+      balance: quota,
+      displayValue: quota / NEWAPI_QUOTA_PER_DISPLAY_UNIT,
+      displayUnit: '',
+      label: '额度',
+      kind: 'quota',
+      raw: { quota: data.quota, used_quota: data.used_quota },
+    };
+  },
 };
 
 // ---------------- registry ----------------
@@ -130,4 +177,4 @@ function getAdapter(type) {
   return adapter;
 }
 
-module.exports = { getAdapter, ADAPTERS };
+module.exports = { getAdapter, ADAPTERS, NEWAPI_QUOTA_PER_DISPLAY_UNIT };

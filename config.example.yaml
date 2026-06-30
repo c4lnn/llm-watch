@@ -13,7 +13,17 @@ upstreams:
 
   # 可以配置多个中转
   # - name: 另一个中转站
-  #   base_url: https://api2.example.com
-  #   type: sub2api
-  #   email: user2@example.com
-  #   password: another-password
+#   base_url: https://api2.example.com
+#   type: sub2api
+#   email: user2@example.com
+#   password: another-password
+
+notifications:
+  # Bark push notification channel. Channels are configured here and can only
+  # be enabled or disabled from the frontend.
+  - id: bark-main
+    type: bark
+    enabled: true
+    config:
+      server: https://api.day.app
+      key: your-bark-key

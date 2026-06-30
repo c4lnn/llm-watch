@@ -1,65 +1,115 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import api from '../api';
 
-const BARK_TYPE = {
-  type: 'bark',
-  label: 'Bark (iOS)',
-  fields: [
-    { key: 'server', label: '服务地址', placeholder: 'https://api.day.app' },
-    { key: 'key', label: '推送 Key', placeholder: 'your-bark-key' },
-  ],
-};
+function channelLabel(type) {
+  return type === 'bark' ? 'Bark (iOS)' : type;
+}
+
+function normalizeConfig(config) {
+  if (!config) return {};
+  if (typeof config === 'string') {
+    try {
+      return JSON.parse(config);
+    } catch {
+      return {};
+    }
+  }
+  return config;
+}
+
+function configSummary(channel) {
+  const config = normalizeConfig(channel.config);
+  if (channel.type === 'bark') {
+    return [config.server, config.key ? `Key ${config.key}` : null].filter(Boolean).join(' / ');
+  }
+  return channel.id;
+}
+
+function numberInputValue(value) {
+  return value === null || value === undefined ? '' : String(value);
+}
 
 function NotificationSettings() {
   const [configs, setConfigs] = useState([]);
+  const [alertSettings, setAlertSettings] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [showAdd, setShowAdd] = useState(false);
-  const [form, setForm] = useState({});
-  const [testing, setTesting] = useState(false);
+  const [testingId, setTestingId] = useState(null);
+  const [savingAlerts, setSavingAlerts] = useState(false);
 
-  const load = () => {
-    api.get('/api/notifications').then(r => {
-      setConfigs(r.data);
-      setLoading(false);
-    });
-  };
-
-  useEffect(load, []);
-
-  const add = async () => {
+  const load = useCallback(async () => {
     try {
-      await api.post('/api/notifications', { type: 'bark', config: form });
-      setShowAdd(false);
-      setForm({});
+      const [notificationRes, alertRes] = await Promise.all([
+        api.get('/api/notifications'),
+        api.get('/api/balance-alerts/settings'),
+      ]);
+      setConfigs(notificationRes.data);
+      setAlertSettings(alertRes.data);
+    } catch (err) {
+      alert(err.response?.data?.error || err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const toggle = async (channel) => {
+    try {
+      await api.put(`/api/notifications/${channel.id}`, { enabled: !channel.enabled });
       load();
     } catch (err) {
       alert(err.response?.data?.error || err.message);
     }
   };
 
-  const toggle = async (id, enabled) => {
-    await api.put(`/api/notifications/${id}`, { enabled: !enabled });
-    load();
-  };
-
-  const remove = async (id) => {
-    if (!window.confirm('确定删除此通知渠道？')) return;
-    await api.delete(`/api/notifications/${id}`);
-    load();
-  };
-
-  const testNotify = async () => {
-    setTesting(true);
+  const updateGlobalAlerts = async (patch) => {
+    setSavingAlerts(true);
     try {
-      const res = await api.post('/api/notifications/test', {
-        type: 'bark',
-        config: form,
-      });
+      const res = await api.put('/api/balance-alerts/settings', patch);
+      setAlertSettings(res.data);
+    } catch (err) {
+      alert(err.response?.data?.error || err.message);
+    } finally {
+      setSavingAlerts(false);
+    }
+  };
+
+  const updateUpstreamAlerts = async (upstreamId, patch) => {
+    setSavingAlerts(true);
+    try {
+      const res = await api.put(`/api/balance-alerts/upstreams/${upstreamId}`, patch);
+      setAlertSettings(res.data);
+    } catch (err) {
+      alert(err.response?.data?.error || err.message);
+    } finally {
+      setSavingAlerts(false);
+    }
+  };
+
+  const clearUpstreamAlerts = async (upstreamId) => {
+    setSavingAlerts(true);
+    try {
+      const res = await api.delete(`/api/balance-alerts/upstreams/${upstreamId}`);
+      setAlertSettings(res.data);
+    } catch (err) {
+      alert(err.response?.data?.error || err.message);
+    } finally {
+      setSavingAlerts(false);
+    }
+  };
+
+  const testNotify = async (id) => {
+    setTestingId(id);
+    try {
+      const res = await api.post('/api/notifications/test', { id });
       alert(res.data.success ? '发送成功！' : `发送失败: ${res.data.error}`);
     } catch (err) {
       alert(`发送失败: ${err.response?.data?.error || err.message}`);
+    } finally {
+      setTestingId(null);
     }
-    setTesting(false);
   };
 
   if (loading) return <div className="text-center py-10 text-gray-400">加载中...</div>;
@@ -68,55 +118,44 @@ function NotificationSettings() {
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <h2 className="text-lg font-semibold text-gray-800">通知渠道</h2>
-        <button
-          onClick={() => setShowAdd(true)}
-          className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition"
-        >
-          + 添加通知
-        </button>
       </div>
 
-      {/* Existing configs */}
       {configs.length === 0 ? (
-        <div className="bg-white rounded-xl shadow-sm p-10 text-center text-gray-400">
-          暂无通知渠道，添加后可在倍率变动时收到推送
+        <div className="bg-white rounded-lg shadow-sm p-10 text-center text-gray-400">
+          暂无通知渠道，请在 config.yaml 的 notifications 中配置
         </div>
       ) : (
         <div className="space-y-3">
-          {configs.map(c => (
-            <div key={c.id} className="bg-white rounded-xl shadow-sm p-5 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <span className={`w-3 h-3 rounded-full ${c.enabled ? 'bg-green-400' : 'bg-gray-300'}`} />
-                <div>
+          {configs.map(channel => (
+            <div key={channel.id} className="bg-white rounded-lg shadow-sm p-5 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex min-w-0 items-center gap-3">
+                <span className={`h-3 w-3 flex-none rounded-full ${channel.enabled ? 'bg-green-400' : 'bg-gray-300'}`} />
+                <div className="min-w-0">
                   <div className="font-medium text-gray-800">
-                    {c.type === 'bark' ? 'Bark (iOS)' : c.type}
+                    {channelLabel(channel.type)}
                   </div>
-                  <div className="text-sm text-gray-400 font-mono">
-                    {(() => {
-                      try {
-                        const cfg = JSON.parse(c.config);
-                        return cfg.server || cfg.key?.substring(0, 20) || '...';
-                      } catch { return '...'; }
-                    })()}
+                  <div className="text-sm text-gray-400 font-mono break-all">
+                    {configSummary(channel) || channel.id}
                   </div>
                 </div>
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2 sm:flex-nowrap">
                 <button
-                  onClick={() => toggle(c.id, c.enabled)}
+                  onClick={() => testNotify(channel.id)}
+                  disabled={testingId === channel.id}
+                  className="px-3 py-1.5 text-sm bg-gray-100 text-gray-600 rounded transition hover:bg-gray-200 disabled:opacity-50"
+                >
+                  {testingId === channel.id ? '发送中...' : '测试发送'}
+                </button>
+                <button
+                  onClick={() => toggle(channel)}
                   className={`px-3 py-1.5 text-sm rounded transition ${
-                    c.enabled
+                    channel.enabled
                       ? 'bg-yellow-50 text-yellow-600 hover:bg-yellow-100'
                       : 'bg-green-50 text-green-600 hover:bg-green-100'
                   }`}
                 >
-                  {c.enabled ? '禁用' : '启用'}
-                </button>
-                <button
-                  onClick={() => remove(c.id)}
-                  className="px-3 py-1.5 text-sm bg-red-50 text-red-600 rounded hover:bg-red-100 transition"
-                >
-                  删除
+                  {channel.enabled ? '禁用' : '启用'}
                 </button>
               </div>
             </div>
@@ -124,51 +163,117 @@ function NotificationSettings() {
         </div>
       )}
 
-      {/* Add Modal */}
-      {showAdd && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md mx-4 p-6">
-            <h3 className="text-lg font-bold text-gray-800 mb-4">添加 Bark 通知</h3>
+      {alertSettings && (
+        <div className="space-y-3">
+          <div className="flex justify-between items-center pt-2">
+            <h2 className="text-lg font-semibold text-gray-800">余额提醒</h2>
+          </div>
 
-            <div className="space-y-4">
-              {BARK_TYPE.fields.map(f => (
-                <div key={f.key}>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">{f.label}</label>
-                  <input
-                    type="text"
-                    value={form[f.key] || ''}
-                    onChange={e => setForm(prev => ({ ...prev, [f.key]: e.target.value }))}
-                    placeholder={f.placeholder}
-                    className="w-full px-3 py-2 border rounded-lg outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
-                  />
+          <div className="bg-white rounded-lg shadow-sm p-5 space-y-4">
+            <div className="grid gap-4 md:grid-cols-4">
+              <label className="flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={alertSettings.global.enabled}
+                  disabled={savingAlerts}
+                  onChange={e => updateGlobalAlerts({ enabled: e.target.checked })}
+                />
+                启用余额提醒
+              </label>
+
+              <label className="text-sm text-gray-700">
+                <span className="block mb-1">默认最低额度</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.0001"
+                  value={numberInputValue(alertSettings.global.default_threshold)}
+                  disabled={savingAlerts}
+                  onChange={e => updateGlobalAlerts({ default_threshold: e.target.value === '' ? null : Number(e.target.value) })}
+                  className="w-full px-3 py-2 border rounded outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="未设置"
+                />
+              </label>
+
+              <label className="text-sm text-gray-700">
+                <span className="block mb-1">重复提醒间隔(分钟)</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={numberInputValue(alertSettings.global.cooldown_minutes)}
+                  disabled={savingAlerts}
+                  onChange={e => updateGlobalAlerts({ cooldown_minutes: Number(e.target.value || 0) })}
+                  className="w-full px-3 py-2 border rounded outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </label>
+
+              <label className="flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={alertSettings.global.notify_recovery}
+                  disabled={savingAlerts}
+                  onChange={e => updateGlobalAlerts({ notify_recovery: e.target.checked })}
+                />
+                恢复正常时通知
+              </label>
+            </div>
+          </div>
+
+          {alertSettings.upstreams.length === 0 ? (
+            <div className="bg-white rounded-lg shadow-sm p-10 text-center text-gray-400">
+              暂无中转配置，无法设置单独阈值
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {alertSettings.upstreams.map(upstream => (
+                <div key={upstream.id} className="bg-white rounded-lg shadow-sm p-5 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <div className="font-medium text-gray-800">{upstream.name}</div>
+                    <div className="text-sm text-gray-400">
+                      {upstream.type} · 当前阈值: {upstream.threshold == null ? '未设置' : upstream.threshold}
+                      {upstream.threshold_source === 'override' ? '（单独设置）' : '（默认）'}
+                    </div>
+                    {upstream.state && (
+                      <div className="text-xs text-gray-400">
+                        状态: {upstream.state.state === 'low' ? '低余额' : '正常'}
+                        {upstream.state.last_value != null ? ` · 上次值: ${upstream.state.last_value}` : ''}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                    <label className="flex items-center gap-2 text-sm text-gray-700">
+                      <input
+                        type="checkbox"
+                        checked={upstream.enabled}
+                        disabled={savingAlerts}
+                        onChange={e => updateUpstreamAlerts(upstream.id, { enabled: e.target.checked })}
+                      />
+                      启用
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.0001"
+                      value={numberInputValue(upstream.override?.threshold)}
+                      disabled={savingAlerts}
+                      onChange={e => updateUpstreamAlerts(upstream.id, { threshold: e.target.value === '' ? null : Number(e.target.value) })}
+                      className="w-full sm:w-36 px-3 py-2 border rounded outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder="使用默认"
+                    />
+                    <button
+                      onClick={() => clearUpstreamAlerts(upstream.id)}
+                      disabled={savingAlerts || !upstream.override}
+                      className="px-3 py-2 text-sm bg-gray-100 text-gray-600 rounded transition hover:bg-gray-200 disabled:opacity-50"
+                    >
+                      清除单独设置
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
-
-            <div className="flex justify-between mt-6">
-              <button
-                onClick={testNotify}
-                disabled={testing}
-                className="px-4 py-2 text-sm bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200 disabled:opacity-50 transition"
-              >
-                {testing ? '发送中...' : '📨 测试发送'}
-              </button>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => { setShowAdd(false); setForm({}); }}
-                  className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg transition"
-                >
-                  取消
-                </button>
-                <button
-                  onClick={add}
-                  className="px-4 py-2 text-sm bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition"
-                >
-                  保存
-                </button>
-              </div>
-            </div>
-          </div>
+          )}
         </div>
       )}
     </div>

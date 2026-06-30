@@ -17,6 +17,9 @@ const DEFAULT_CONFIG_PATH = path.join(__dirname, '..', 'config.yaml');
 
 // 内存中的中转配置列表
 let upstreams = [];
+let notifications = [];
+
+const SUPPORTED_NOTIFICATION_TYPES = new Set(['bark']);
 
 /**
  * 获取配置文件路径
@@ -35,6 +38,7 @@ function loadConfig() {
   if (!fs.existsSync(configPath)) {
     console.warn(`[Config] 配置文件不存在: ${configPath}`);
     upstreams = [];
+    notifications = [];
     return upstreams;
   }
 
@@ -45,11 +49,13 @@ function loadConfig() {
     if (!config || !Array.isArray(config.upstreams)) {
       console.warn('[Config] 配置文件格式错误: 缺少 upstreams 数组');
       upstreams = [];
+      notifications = [];
       return upstreams;
     }
 
     upstreams = config.upstreams.map((u, index) => validateUpstream(u, index));
-    console.log(`[Config] 已加载 ${upstreams.length} 个中转配置`);
+    notifications = validateNotifications(config.notifications || []);
+    console.log(`[Config] 已加载 ${upstreams.length} 个中转配置，${notifications.length} 个通知渠道`);
     return upstreams;
   } catch (err) {
     console.error(`[Config] 配置文件解析失败: ${err.message}`);
@@ -102,6 +108,81 @@ function validateUpstream(upstream, index) {
   };
 }
 
+function validateNotifications(items) {
+  if (!Array.isArray(items)) {
+    console.error('[Config] notifications 必须是数组');
+    process.exit(1);
+  }
+
+  const seenIds = new Set();
+  return items.map((item, index) => validateNotification(item, index, seenIds));
+}
+
+function validateNotification(notification, index, seenIds) {
+  const prefix = `notifications[${index}]`;
+
+  if (!notification || typeof notification !== 'object') {
+    console.error(`[Config] ${prefix}: 必须是对象`);
+    process.exit(1);
+  }
+
+  const id = String(notification.id || '').trim();
+  if (!id) {
+    console.error(`[Config] ${prefix}: 缺少 id 字段`);
+    process.exit(1);
+  }
+  if (seenIds.has(id)) {
+    console.error(`[Config] ${prefix}: id 重复: ${id}`);
+    process.exit(1);
+  }
+  seenIds.add(id);
+
+  const type = String(notification.type || '').trim().toLowerCase();
+  if (!type) {
+    console.error(`[Config] ${prefix}: 缺少 type 字段`);
+    process.exit(1);
+  }
+  if (!SUPPORTED_NOTIFICATION_TYPES.has(type)) {
+    console.error(`[Config] ${prefix}: 不支持的通知类型: ${type}`);
+    process.exit(1);
+  }
+
+  if (notification.enabled !== undefined && typeof notification.enabled !== 'boolean') {
+    console.error(`[Config] ${prefix}: enabled 必须是布尔值`);
+    process.exit(1);
+  }
+
+  if (!notification.config || typeof notification.config !== 'object' || Array.isArray(notification.config)) {
+    console.error(`[Config] ${prefix}: 缺少 config 对象`);
+    process.exit(1);
+  }
+
+  return {
+    id,
+    type,
+    enabled: notification.enabled !== false,
+    config: validateNotificationConfig(type, notification.config, prefix),
+  };
+}
+
+function validateNotificationConfig(type, config, prefix) {
+  if (type === 'bark') {
+    const server = String(config.server || '').replace(/\/+$/, '');
+    const key = String(config.key || '').trim();
+    if (!server) {
+      console.error(`[Config] ${prefix}: Bark config 缺少 server 字段`);
+      process.exit(1);
+    }
+    if (!key) {
+      console.error(`[Config] ${prefix}: Bark config 缺少 key 字段`);
+      process.exit(1);
+    }
+    return { server, key };
+  }
+
+  return { ...config };
+}
+
 /**
  * 获取所有中转配置
  */
@@ -131,10 +212,55 @@ function getUpstreamsForApi() {
   }));
 }
 
+function getNotifications() {
+  return notifications.map(n => ({
+    ...n,
+    config: { ...n.config },
+  }));
+}
+
+function getNotificationById(id) {
+  const notification = notifications.find(n => n.id === String(id));
+  if (!notification) return null;
+  return {
+    ...notification,
+    config: { ...notification.config },
+  };
+}
+
+function maskSecret(value) {
+  const text = String(value || '');
+  if (!text) return '';
+  if (text.length <= 8) return '***';
+  return `${text.slice(0, 4)}***${text.slice(-4)}`;
+}
+
+function sanitizeNotificationConfig(notification) {
+  if (notification.type === 'bark') {
+    return {
+      server: notification.config.server,
+      key: maskSecret(notification.config.key),
+    };
+  }
+  return {};
+}
+
+function getNotificationsForApi() {
+  return notifications.map(n => ({
+    id: n.id,
+    type: n.type,
+    enabled: n.enabled,
+    config: sanitizeNotificationConfig(n),
+  }));
+}
+
 module.exports = {
   loadConfig,
   getUpstreams,
   getUpstreamById,
   getUpstreamsForApi,
+  getNotifications,
+  getNotificationById,
+  getNotificationsForApi,
   getConfigPath,
 };

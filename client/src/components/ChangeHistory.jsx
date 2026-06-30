@@ -64,17 +64,17 @@ function ChangeHistory() {
       </div>
 
       {/* Changes List */}
-      <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+      <div className="bg-white rounded-xl shadow-sm overflow-x-auto">
         {filtered.length === 0 ? (
           <div className="text-center py-10 text-gray-400">暂无变动记录</div>
         ) : (
-          <table className="w-full">
+          <table className="w-full min-w-[900px]">
             <thead className="bg-gray-50 text-sm text-gray-500">
               <tr>
                 <th className="text-left px-6 py-3">时间</th>
                 <th className="text-left px-6 py-3">中转</th>
                 <th className="text-left px-6 py-3">分组</th>
-                <th className="text-left px-6 py-3">类型</th>
+                <th className="w-24 text-left px-6 py-3 whitespace-nowrap">类型</th>
                 <th className="text-left px-6 py-3">详情</th>
               </tr>
             </thead>
@@ -91,9 +91,10 @@ function ChangeHistory() {
                       {c.group_name}
                       <span className="ml-1 text-xs text-gray-300">#{c.group_id}</span>
                     </td>
-                    <td className="px-6 py-3">
-                      <span className={`text-xs px-2 py-0.5 rounded ${typeInfo.color}`}>
-                        {typeInfo.icon} {typeInfo.label}
+                    <td className="px-6 py-3 whitespace-nowrap">
+                      <span className={`inline-flex items-center gap-1 whitespace-nowrap text-xs px-2 py-0.5 rounded ${typeInfo.color}`}>
+                        <span>{typeInfo.icon}</span>
+                        <span>{typeInfo.label}</span>
                       </span>
                     </td>
                     <td className="px-6 py-3 text-sm text-gray-600">

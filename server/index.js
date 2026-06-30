@@ -4,11 +4,31 @@ const cors = require('cors');
 const cron = require('node-cron');
 const path = require('path');
 const fs = require('fs');
-const { getDb, save, selectAll, run } = require('./db');
+const {
+  getDb,
+  save,
+  selectAll,
+  run,
+  selectLatestUpstreamBalanceStatuses,
+  getBalanceAlertGlobalSettings,
+  updateBalanceAlertGlobalSettings,
+  getBalanceAlertOverrides,
+  upsertBalanceAlertOverride,
+  deleteBalanceAlertOverride,
+  getEffectiveBalanceAlertSettings,
+  getBalanceAlertState,
+} = require('./db');
 const { pollAll, pollUpstream } = require('./poller');
 const { notify } = require('./notifier');
 const { getAdapter } = require('./adapters');
-const { loadConfig, getUpstreams, getUpstreamById, getUpstreamsForApi } = require('./config');
+const {
+  loadConfig,
+  getUpstreams,
+  getUpstreamById,
+  getUpstreamsForApi,
+  getNotificationsForApi,
+  getNotificationById,
+} = require('./config');
 
 const app = express();
 const PORT = process.env.PORT || 8888;
@@ -197,53 +217,72 @@ app.post('/api/test', async (req, res) => {
 
 // ==================== Notification Config ====================
 
+function getNotificationEnabledOverrides() {
+  const rows = selectAll('SELECT notification_id, enabled FROM notification_state');
+  return Object.fromEntries(rows.map(row => [String(row.notification_id), row.enabled === 1]));
+}
+
+function applyNotificationEnabledOverrides(configs) {
+  const overrides = getNotificationEnabledOverrides();
+  return configs.map(cfg => ({
+    ...cfg,
+    enabled: Object.prototype.hasOwnProperty.call(overrides, cfg.id) ? overrides[cfg.id] : cfg.enabled,
+  }));
+}
+
 app.get('/api/notifications', (req, res) => {
-  res.json(selectAll('SELECT * FROM notification_config ORDER BY created_at DESC'));
+  res.json(applyNotificationEnabledOverrides(getNotificationsForApi()));
 });
 
 app.post('/api/notifications', (req, res) => {
-  const { type, config } = req.body;
-  if (!type || !config) {
-    return res.status(400).json({ error: 'type and config are required' });
-  }
-  run(
-    'INSERT INTO notification_config (type, config, enabled) VALUES (?, ?, 1)',
-    [type, typeof config === 'string' ? config : JSON.stringify(config)]
-  );
-  save();
-  res.json({ success: true });
+  res.status(403).json({ error: '通知渠道需通过 config.yaml 配置，无法通过前端新增' });
 });
 
 app.put('/api/notifications/:id', (req, res) => {
   const { id } = req.params;
-  const { config, enabled } = req.body;
-  const fields = [];
-  const values = [];
+  const keys = Object.keys(req.body || {});
+  const { enabled } = req.body || {};
 
-  if (config !== undefined) {
-    fields.push('config = ?');
-    values.push(typeof config === 'string' ? config : JSON.stringify(config));
+  if (keys.some(key => key !== 'enabled')) {
+    return res.status(400).json({ error: '仅支持修改 enabled 状态' });
   }
-  if (enabled !== undefined) { fields.push('enabled = ?'); values.push(enabled ? 1 : 0); }
-  if (!fields.length) return res.status(400).json({ error: 'No fields to update' });
+  if (typeof enabled !== 'boolean') {
+    return res.status(400).json({ error: 'enabled must be boolean' });
+  }
+  if (!getNotificationById(id)) {
+    return res.status(404).json({ error: 'Notification channel not found' });
+  }
 
-  values.push(id);
-  run(`UPDATE notification_config SET ${fields.join(', ')} WHERE id = ?`, values);
+  const existing = selectAll('SELECT notification_id FROM notification_state WHERE notification_id = ?', [id])[0];
+  if (existing) {
+    run(
+      'UPDATE notification_state SET enabled = ?, updated_at = datetime(\'now\') WHERE notification_id = ?',
+      [enabled ? 1 : 0, id]
+    );
+  } else {
+    run(
+      'INSERT INTO notification_state (notification_id, enabled) VALUES (?, ?)',
+      [id, enabled ? 1 : 0]
+    );
+  }
   save();
   res.json({ success: true });
 });
 
 app.delete('/api/notifications/:id', (req, res) => {
-  run('DELETE FROM notification_config WHERE id = ?', [req.params.id]);
-  save();
-  res.json({ success: true });
+  res.status(403).json({ error: '通知渠道需通过 config.yaml 配置，无法通过前端删除' });
 });
 
 app.post('/api/notifications/test', async (req, res) => {
-  const { type, config } = req.body;
+  const { id } = req.body;
+  const channel = getNotificationById(id);
+  if (!channel) {
+    return res.status(404).json({ success: false, error: 'Notification channel not found' });
+  }
+
   try {
     const results = await notify(
-      [{ type, config: typeof config === 'string' ? config : JSON.stringify(config), enabled: 1 }],
+      [{ ...channel, enabled: true }],
       '监控系统测试通知',
       `这是一条测试通知\n时间: ${new Date().toLocaleString('zh-CN')}`
     );
@@ -253,9 +292,114 @@ app.post('/api/notifications/test', async (req, res) => {
   }
 });
 
+// ==================== Balance Alert Settings ====================
+
+function parseOptionalNonNegativeNumber(value, field) {
+  if (value === undefined) return undefined;
+  if (value === null || value === '') return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) {
+    const err = new Error(`${field} must be a non-negative number`);
+    err.status = 400;
+    throw err;
+  }
+  return numeric;
+}
+
+function parseOptionalBoolean(value, field) {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'boolean') {
+    const err = new Error(`${field} must be boolean`);
+    err.status = 400;
+    throw err;
+  }
+  return value;
+}
+
+function buildBalanceAlertSettingsPayload() {
+  const global = getBalanceAlertGlobalSettings();
+  const overrides = getBalanceAlertOverrides();
+  const overrideMap = Object.fromEntries(overrides.map(row => [row.upstream_id, row]));
+  const upstreams = getUpstreamsForApi().map(upstream => {
+    const effective = getEffectiveBalanceAlertSettings(upstream.id);
+    const state = getBalanceAlertState(upstream.id);
+    return {
+      id: upstream.id,
+      name: upstream.name,
+      type: upstream.type,
+      enabled: effective.enabled,
+      threshold: effective.threshold,
+      threshold_source: effective.threshold_source,
+      override: overrideMap[upstream.id] || null,
+      state,
+    };
+  });
+
+  return { global, upstreams };
+}
+
+app.get('/api/balance-alerts/settings', (req, res) => {
+  res.json(buildBalanceAlertSettingsPayload());
+});
+
+app.put('/api/balance-alerts/settings', (req, res) => {
+  try {
+    const body = req.body || {};
+    const patch = {};
+
+    if (body.enabled !== undefined) patch.enabled = parseOptionalBoolean(body.enabled, 'enabled');
+    if (body.notify_recovery !== undefined) {
+      patch.notify_recovery = parseOptionalBoolean(body.notify_recovery, 'notify_recovery');
+    }
+    if (body.default_threshold !== undefined) {
+      patch.default_threshold = parseOptionalNonNegativeNumber(body.default_threshold, 'default_threshold');
+    }
+    if (body.cooldown_minutes !== undefined) {
+      const cooldown = parseOptionalNonNegativeNumber(body.cooldown_minutes, 'cooldown_minutes');
+      if (cooldown === null || !Number.isInteger(cooldown)) {
+        return res.status(400).json({ error: 'cooldown_minutes must be a non-negative integer' });
+      }
+      patch.cooldown_minutes = cooldown;
+    }
+
+    updateBalanceAlertGlobalSettings(patch);
+    save();
+    res.json(buildBalanceAlertSettingsPayload());
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.put('/api/balance-alerts/upstreams/:id', (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!getUpstreamById(id)) return res.status(404).json({ error: 'Upstream not found' });
+
+    const body = req.body || {};
+    const patch = {};
+    if (body.enabled !== undefined) patch.enabled = parseOptionalBoolean(body.enabled, 'enabled');
+    if (body.threshold !== undefined) {
+      patch.threshold = parseOptionalNonNegativeNumber(body.threshold, 'threshold');
+    }
+
+    upsertBalanceAlertOverride(id, patch);
+    save();
+    res.json(buildBalanceAlertSettingsPayload());
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/balance-alerts/upstreams/:id', (req, res) => {
+  if (!getUpstreamById(req.params.id)) return res.status(404).json({ error: 'Upstream not found' });
+  deleteBalanceAlertOverride(req.params.id);
+  save();
+  res.json(buildBalanceAlertSettingsPayload());
+});
+
 // ==================== Dashboard Stats ====================
 
-app.get('/api/stats', (req, res) => {
+function buildStatsPayload() {
   const upstreamCount = selectAll('SELECT COUNT(*) as count FROM upstreams WHERE enabled = 1')[0]?.count || 0;
   const changes24h = selectAll(`
     SELECT COUNT(*) as count FROM group_changes WHERE created_at >= datetime('now', '-24 hours')
@@ -287,12 +431,48 @@ app.get('/api/stats', (req, res) => {
     (changeMap[`${c.upstream_id}_${c.group_id}`] ||= []).push(c);
   }
 
-  res.json({
+  const upstreamRows = selectAll('SELECT id, name, type FROM upstreams WHERE enabled = 1');
+  const latestBalanceRows = selectLatestUpstreamBalanceStatuses(upstreamRows.map(u => u.id));
+  const balanceMap = {};
+
+  for (const upstream of upstreamRows) {
+    const row = latestBalanceRows.find(r => String(r.upstream_id) === String(upstream.id));
+    balanceMap[upstream.id] = row
+      ? {
+          upstream_id: row.upstream_id,
+          status: row.status,
+          balance: row.balance,
+          display_value: row.display_value,
+          display_unit: row.display_unit,
+          label: row.label,
+          kind: row.kind,
+          error: row.error,
+          created_at: row.created_at,
+        }
+      : {
+          upstream_id: upstream.id,
+          status: 'not_fetched',
+          balance: null,
+          display_value: null,
+          display_unit: null,
+          label: upstream.type === 'new-api' ? '额度' : '余额',
+          kind: null,
+          error: null,
+          created_at: null,
+        };
+  }
+
+  return {
     upstream_count: upstreamCount,
     changes_24h: changes24h,
     latest_rates: latestRates,
     recent_changes: changeMap,
-  });
+    upstream_balances: balanceMap,
+  };
+}
+
+app.get('/api/stats', (req, res) => {
+  res.json(buildStatsPayload());
 });
 
 // ==================== SPA fallback ====================
@@ -372,7 +552,11 @@ async function start() {
   });
 }
 
-start().catch(err => {
-  console.error('Failed to start:', err);
-  process.exit(1);
-});
+if (require.main === module) {
+  start().catch(err => {
+    console.error('Failed to start:', err);
+    process.exit(1);
+  });
+}
+
+module.exports = { app, buildStatsPayload, isDue, start };

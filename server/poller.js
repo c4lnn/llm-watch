@@ -14,9 +14,10 @@
  */
 
 const { sendNotification } = require('./notifier');
-const { selectAll, run } = require('./db');
+const { selectAll, run, insertUpstreamBalanceSnapshot } = require('./db');
 const { getAdapter } = require('./adapters');
 const { getUpstreams } = require('./config');
+const { evaluateBalanceAlert } = require('./balanceAlerts');
 
 // 确保数据库中存在对应的 upstream 记录
 // 配置文件中的 id 作为数据库主键
@@ -36,7 +37,7 @@ function ensureUpstreamInDb(upstream) {
 // Fetch normalized groups using the cached auth token, transparently
 // (re)logging in with the stored credentials when the token is missing or
 // rejected (401). A freshly obtained token is persisted back to the upstream.
-async function fetchGroupsWithAuth(upstream, adapter) {
+async function withAuth(upstream, adapter, action) {
   const { id, base_url, email, password } = upstream;
   let token = upstream.auth_token;
 
@@ -47,6 +48,7 @@ async function fetchGroupsWithAuth(upstream, adapter) {
     if (!email || !password) throw new Error('缺少账号或密码，无法登录');
     console.log(`[Auth] ${upstream.name}: 登录获取凭证 (${email})`);
     token = await adapter.login(base_url, email, password);
+    upstream.auth_token = token;
     run(`UPDATE upstreams SET auth_token = ? WHERE id = ?`, [token, id]);
     return token;
   };
@@ -54,15 +56,26 @@ async function fetchGroupsWithAuth(upstream, adapter) {
   if (!token) await relogin();
 
   try {
-    return await adapter.fetchGroups(base_url, token);
+    return await action(base_url, token);
   } catch (err) {
     if (err.response?.status === 401 && email && password) {
       console.log(`[Auth] ${upstream.name}: 凭证失效 (401)，自动重新登录`);
       await relogin();
-      return await adapter.fetchGroups(base_url, token);
+      return await action(base_url, token);
     }
     throw err;
   }
+}
+
+async function fetchGroupsWithAuth(upstream, adapter) {
+  return withAuth(upstream, adapter, (baseUrl, token) => adapter.fetchGroups(baseUrl, token));
+}
+
+async function fetchAccountStatusWithAuth(upstream, adapter) {
+  if (typeof adapter.fetchAccountStatus !== 'function') {
+    return { status: 'unsupported', label: '余额', kind: null, raw: null };
+  }
+  return withAuth(upstream, adapter, (baseUrl, token) => adapter.fetchAccountStatus(baseUrl, token));
 }
 
 // Load the PREVIOUS poll's groups for an upstream, keyed by group key (string).
@@ -185,6 +198,52 @@ function markPolled(upstreamId, status, error) {
   );
 }
 
+async function recordAccountStatus(upstream, adapter, now) {
+  const fallbackLabel = upstream.type === 'new-api' ? '额度' : '余额';
+  try {
+    const accountStatus = await fetchAccountStatusWithAuth(upstream, adapter);
+    if (accountStatus.status === 'unsupported') {
+      insertUpstreamBalanceSnapshot({
+        upstreamId: upstream.id,
+        status: 'unsupported',
+        label: accountStatus.label || fallbackLabel,
+        kind: accountStatus.kind,
+        rawData: accountStatus.raw,
+        createdAt: now,
+      });
+      return { status: 'unsupported' };
+    }
+
+    insertUpstreamBalanceSnapshot({
+      upstreamId: upstream.id,
+      status: 'success',
+      balance: accountStatus.balance,
+      displayValue: accountStatus.displayValue,
+      displayUnit: accountStatus.displayUnit,
+      label: accountStatus.label,
+      kind: accountStatus.kind,
+      rawData: accountStatus.raw,
+      createdAt: now,
+    });
+    try {
+      await evaluateBalanceAlert(upstream, accountStatus, now);
+    } catch (err) {
+      console.error(`[BalanceAlert] ${upstream.name} 余额提醒处理失败:`, err.message);
+    }
+    return { status: 'success' };
+  } catch (err) {
+    insertUpstreamBalanceSnapshot({
+      upstreamId: upstream.id,
+      status: err.message === 'unsupported' ? 'unsupported' : 'failed',
+      label: fallbackLabel,
+      error: err.message,
+      createdAt: now,
+    });
+    console.error(`[Balance] ${upstream.name} 获取余额失败:`, err.message);
+    return { status: 'failed', error: err.message };
+  }
+}
+
 // Poll a single upstream: fetch, diff against last snapshot, record + notify.
 async function pollUpstream(upstream) {
   const { id: upstreamId, name: upstreamName, type } = upstream;
@@ -207,6 +266,7 @@ async function pollUpstream(upstream) {
       );
     }
     pruneSnapshots(upstreamId);
+    await recordAccountStatus(upstream, adapter, now);
 
     if (changes.length) {
       const body = recordChanges(upstreamId, changes, now, adapter);
@@ -250,13 +310,16 @@ async function pollAll() {
 
 module.exports = {
   fetchGroupsWithAuth,
+  fetchAccountStatusWithAuth,
   pollUpstream,
   pollAll,
   _test: {
     ensureUpstreamInDb,
+    withAuth,
     detectChanges,
     formatRate,
     recordChanges,
+    recordAccountStatus,
     markPolled,
   },
 };
