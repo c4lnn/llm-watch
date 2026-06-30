@@ -1,7 +1,7 @@
 node_modules/
 client/build/
 data/
-config.yaml
+/config.yaml
 *.db
 .env
 .DS_Store
@@ -10,6 +10,4 @@ config.yaml
 .claude/
 .codex/
 .codegraph/
-openspec/
 CLAUDE.md
-AGENTS.md
