@@ -20,6 +20,7 @@ let upstreams = [];
 let notifications = [];
 
 const SUPPORTED_NOTIFICATION_TYPES = new Set(['bark']);
+const DEFAULT_BARK_GROUP = 'LLM Watch';
 
 /**
  * 获取配置文件路径
@@ -169,6 +170,7 @@ function validateNotificationConfig(type, config, prefix) {
   if (type === 'bark') {
     const server = String(config.server || '').replace(/\/+$/, '');
     const key = String(config.key || '').trim();
+    const group = String(config.group || '').trim();
     if (!server) {
       console.error(`[Config] ${prefix}: Bark config 缺少 server 字段`);
       process.exit(1);
@@ -177,7 +179,7 @@ function validateNotificationConfig(type, config, prefix) {
       console.error(`[Config] ${prefix}: Bark config 缺少 key 字段`);
       process.exit(1);
     }
-    return { server, key };
+    return group ? { server, key, group } : { server, key };
   }
 
   return { ...config };
@@ -240,6 +242,7 @@ function sanitizeNotificationConfig(notification) {
     return {
       server: notification.config.server,
       key: maskSecret(notification.config.key),
+      group: notification.config.group || DEFAULT_BARK_GROUP,
     };
   }
   return {};

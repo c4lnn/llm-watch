@@ -2,10 +2,21 @@ const axios = require('axios');
 const { selectAll } = require('./db');
 const { getNotifications } = require('./config');
 
+const DEFAULT_BARK_GROUP = 'LLM Watch';
+
+function getBarkGroup(config) {
+  const group = String(config.group || '').trim();
+  return group || DEFAULT_BARK_GROUP;
+}
+
 // Bark push notification
 async function sendBark(config, title, body) {
   const { server, key } = config;
-  const url = `${server}/${key}/${encodeURIComponent(title)}/${encodeURIComponent(body)}?sound=minuet&group=monitor`;
+  const params = new URLSearchParams({
+    sound: 'minuet',
+    group: getBarkGroup(config),
+  });
+  const url = `${server}/${key}/${encodeURIComponent(title)}/${encodeURIComponent(body)}?${params.toString()}`;
   await axios.get(url);
 }
 
@@ -68,6 +79,7 @@ module.exports = {
   sendNotification,
   _test: {
     applyEnabledOverrides,
+    getBarkGroup,
     parseChannelConfig,
   },
 };

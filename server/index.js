@@ -32,6 +32,7 @@ const {
 
 const app = express();
 const PORT = process.env.PORT || 8888;
+const DEFAULT_CHANGE_HISTORY_LIMIT = 100;
 
 app.use(cors());
 app.use(express.json());
@@ -41,6 +42,38 @@ const clientBuild = path.join(__dirname, '..', 'client', 'build');
 app.use(express.static(clientBuild));
 
 const stripTrailingSlash = (url) => url.replace(/\/+$/, '');
+
+function parseChangeHistoryLimit(value) {
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_CHANGE_HISTORY_LIMIT;
+}
+
+function aggregateChangeHistoryRows(rows, limit) {
+  const grouped = new Map();
+  const records = [];
+
+  for (const row of rows) {
+    if (row.change_type !== 'changed') {
+      records.push(row);
+      continue;
+    }
+
+    const key = [row.created_at, row.upstream_id, row.group_id].join('\u0000');
+    let record = grouped.get(key);
+    if (!record) {
+      record = { ...row, field_changes: [] };
+      grouped.set(key, record);
+      records.push(record);
+    }
+    record.field_changes.push({
+      field_name: row.field_name,
+      old_value: row.old_value,
+      new_value: row.new_value,
+    });
+  }
+
+  return records.slice(0, limit);
+}
 
 // ==================== Upstream APIs ====================
 
@@ -111,9 +144,9 @@ app.get('/api/changes', (req, res) => {
     sql += ` WHERE gc.upstream_id = ?`;
     params.push(upstream_id);
   }
-  sql += ` ORDER BY gc.created_at DESC LIMIT ?`;
-  params.push(parseInt(limit) || 100);
-  res.json(selectAll(sql, params));
+  sql += ` ORDER BY gc.created_at DESC, gc.id DESC`;
+  const rows = selectAll(sql, params);
+  res.json(aggregateChangeHistoryRows(rows, parseChangeHistoryLimit(limit)));
 });
 
 // Rate history for a specific group (by name)

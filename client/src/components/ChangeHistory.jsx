@@ -21,6 +21,29 @@ const FIELD_NAMES = {
   ratio: '倍率', desc: '描述',
 };
 
+function getFieldChanges(change) {
+  if (Array.isArray(change.field_changes) && change.field_changes.length) {
+    return change.field_changes;
+  }
+  return [{
+    field_name: change.field_name,
+    old_value: change.old_value,
+    new_value: change.new_value,
+  }];
+}
+
+function FieldChangeDetail({ change }) {
+  return (
+    <span>
+      <span className="text-gray-400">{FIELD_NAMES[change.field_name] || change.field_name}</span>
+      <span className="mx-1 text-gray-300">:</span>
+      <span className="line-through text-red-400">{change.old_value}</span>
+      <span className="mx-1 text-gray-300">→</span>
+      <span className="text-green-600 font-medium">{change.new_value}</span>
+    </span>
+  );
+}
+
 function ChangeHistory() {
   const [changes, setChanges] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -99,13 +122,13 @@ function ChangeHistory() {
                     </td>
                     <td className="px-6 py-3 text-sm text-gray-600">
                       {c.change_type === 'changed' ? (
-                        <span>
-                          <span className="text-gray-400">{FIELD_NAMES[c.field_name] || c.field_name}</span>
-                          <span className="mx-1 text-gray-300">:</span>
-                          <span className="line-through text-red-400">{c.old_value}</span>
-                          <span className="mx-1 text-gray-300">→</span>
-                          <span className="text-green-600 font-medium">{c.new_value}</span>
-                        </span>
+                        <div className="space-y-1">
+                          {getFieldChanges(c).map((change, index) => (
+                            <div key={`${change.field_name || 'field'}-${index}`}>
+                              <FieldChangeDetail change={change} />
+                            </div>
+                          ))}
+                        </div>
                       ) : c.change_type === 'available' ? (
                         <span className="text-green-600">分组上线</span>
                       ) : (

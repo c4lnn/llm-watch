@@ -123,6 +123,7 @@ test('config loads YAML notifications with default enabled and sanitized API con
     config:
       server: https://api.day.app/
       key: secret-bark-key
+      group: 自定义分组
 `),
     async () => {
       const full = config.getNotifications();
@@ -131,9 +132,10 @@ test('config loads YAML notifications with default enabled and sanitized API con
       assert.equal(full.length, 1);
       assert.equal(full[0].id, 'bark-main');
       assert.equal(full[0].enabled, true);
-      assert.deepEqual(full[0].config, { server: 'https://api.day.app', key: 'secret-bark-key' });
+      assert.deepEqual(full[0].config, { server: 'https://api.day.app', key: 'secret-bark-key', group: '自定义分组' });
 
       assert.equal(sanitized[0].config.server, 'https://api.day.app');
+      assert.equal(sanitized[0].config.group, '自定义分组');
       assert.notEqual(sanitized[0].config.key, 'secret-bark-key');
       assert.match(sanitized[0].config.key, /\*\*\*/);
     }
@@ -149,6 +151,7 @@ test('notification APIs expose config-managed channels and reject create/delete'
     config:
       server: https://api.day.app
       key: secret-bark-key
+      group: 测试 Group
 `),
       async () => {
         const calls = [];
@@ -168,6 +171,8 @@ test('notification APIs expose config-managed channels and reject create/delete'
           assert.equal(response.body.length, 1);
           assert.equal(response.body[0].id, 'bark-main');
           assert.equal(response.body[0].enabled, true);
+          assert.equal(response.body[0].config.group, '测试 Group');
+          assert.notEqual(response.body[0].config.key, 'secret-bark-key');
 
           response = await requestJson(baseUrl, '/api/notifications/bark-main', {
             method: 'PUT',
@@ -202,6 +207,7 @@ test('notification APIs expose config-managed channels and reject create/delete'
           assert.equal(calls.length, 1);
           assert.equal(calls[0].method, 'get');
           assert.match(calls[0].url, /^https:\/\/api\.day\.app\/secret-bark-key\//);
+          assert.equal(new URL(calls[0].url).searchParams.get('group'), '测试 Group');
         } finally {
           if (server) await close(server);
           restoreAxios();
@@ -229,6 +235,9 @@ test('sendNotification uses YAML channels and skips runtime-disabled channels', 
       key: disabled-key
 `),
       async () => {
+        const apiNotifications = config.getNotificationsForApi();
+        assert.equal(apiNotifications.find(n => n.id === 'bark-enabled').config.group, 'LLM Watch');
+
         db.run(
           'INSERT INTO notification_state (notification_id, enabled) VALUES (?, ?)',
           ['bark-disabled', 0]
@@ -248,6 +257,7 @@ test('sendNotification uses YAML channels and skips runtime-disabled channels', 
           assert.equal(results[0].id, 'bark-enabled');
           assert.equal(calls.length, 1);
           assert.match(calls[0].url, /^https:\/\/api\.day\.app\/enabled-key\//);
+          assert.equal(new URL(calls[0].url).searchParams.get('group'), 'LLM Watch');
           assert.doesNotMatch(calls[0].url, /disabled-key/);
         } finally {
           restoreAxios();
@@ -255,4 +265,40 @@ test('sendNotification uses YAML channels and skips runtime-disabled channels', 
       }
     );
   });
+});
+
+test('Bark group query parameter uses configured value or default', async () => {
+  const calls = [];
+  const restoreAxios = installAxiosMock((method, url) => {
+    calls.push({ method, url });
+    return Promise.resolve({ data: { ok: true } });
+  });
+
+  try {
+    const { notify } = requireFreshNotifier();
+    const results = await notify(
+      [
+        {
+          id: 'bark-custom',
+          type: 'bark',
+          enabled: true,
+          config: { server: 'https://api.day.app', key: 'custom-key', group: '中文 Group' },
+        },
+        {
+          id: 'bark-default',
+          type: 'bark',
+          enabled: true,
+          config: { server: 'https://api.day.app', key: 'default-key', group: '   ' },
+        },
+      ],
+      'Title',
+      'Body'
+    );
+
+    assert.equal(results.length, 2);
+    assert.equal(new URL(calls[0].url).searchParams.get('group'), '中文 Group');
+    assert.equal(new URL(calls[1].url).searchParams.get('group'), 'LLM Watch');
+  } finally {
+    restoreAxios();
+  }
 });

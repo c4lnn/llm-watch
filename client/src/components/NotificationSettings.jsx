@@ -20,7 +20,11 @@ function normalizeConfig(config) {
 function configSummary(channel) {
   const config = normalizeConfig(channel.config);
   if (channel.type === 'bark') {
-    return [config.server, config.key ? `Key ${config.key}` : null].filter(Boolean).join(' / ');
+    return [
+      config.server,
+      config.key ? `Key ${config.key}` : null,
+      config.group ? `Group ${config.group}` : null,
+    ].filter(Boolean).join(' / ');
   }
   return channel.id;
 }

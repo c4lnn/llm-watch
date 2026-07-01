@@ -27,3 +27,4 @@ notifications:
     config:
       server: https://api.day.app
       key: your-bark-key
+      group: LLM Watch              # 可选，Bark 推送分组名；未配置时默认 LLM Watch
